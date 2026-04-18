@@ -127,7 +127,8 @@ class SubscriptionController extends Controller
         ]);
 
         return response()->json([
-            'payment_url' => "https://accept.paymob.com/api/acceptance/iframes/" . config('paymob.integration_id') . "?payment_token={$paymentKey}",
+           'payment_url' => "https://accept.paymob.com/unifiedcheckout/?publicKey=" . config('paymob.public_key') . "&clientSecret={$paymentKey}",
+
         ]);
     }
 

@@ -2,12 +2,19 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Auth\ForgotPasswordRequest;
+use App\Http\Requests\Auth\LoginRequest;
+use App\Http\Requests\Auth\RegisterRequest;
+use App\Http\Requests\Auth\ResetPasswordRequest;
 use App\Mail\PasswordResetOtp;
 use App\Models\User;
+use App\Services\AuthService;
+use App\Traits\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
@@ -15,74 +22,50 @@ use Illuminate\Validation\Rules;
 
 class AuthController extends Controller
 {
+    use ApiResponse;
+public function __construct(private AuthService $authService) {}
+
     /**
      * Register a new user and return Sanctum token
      */
-    public function register(Request $request)
+    public function register(RegisterRequest $request)
     {
-        // Validate incoming request data
-        $validated = $request->validate([
-            'name' => ['required', 'string', 'min:3', 'max:255', 'unique:users,name'],
-            'email' => ['required', 'email', 'max:255', 'unique:users,email'],
-            'phone' => ['required', 'numeric', 'digits_between:10,15'],
-            'password' => ['required', 'confirmed', Rules\Password::defaults()],
-        ]);
+
 
         try {
-            // Create user in database
-            $user = User::create([
-                'name' => $validated['name'],
-                'email' => $validated['email'],
-                'phone' => $validated['phone'],
-                'password' => Hash::make($validated['password']),
-            ]);
+            $result = $this->authService->register($request->validated());
 
-            // Generate API token (Sanctum)
-            $token = $user->createToken('auth_token')->plainTextToken;
-
-            return response()->json([
-                'success' => true,
-                'user' => $this->formatUser($user),
-                'token' => $token,
-            ], 201);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Registration failed',
-            ], 500);
+            return $this->success(
+                data: $result,
+                message: 'Registered successfully',
+                status: 201
+            );
+        }  catch (\Exception $e) {
+              return $this->error($e->getMessage(), 500);
         }
     }
 
     /**
      * Login user and return Sanctum token
      */
-    public function login(Request $request)
+    public function login(LoginRequest  $request)
     {
-        // Validate credentials format
-        $request->validate([
-            'email' => 'required|email',
-            'password' => 'required',
-        ]);
+         try {
+            $result = $this->authService->login($request->only('email', 'password'));
 
-        // Attempt login
-        if (!Auth::attempt($request->only('email', 'password'))) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Invalid credentials'
-            ], 401);
-        }
-        /** @var \App\Models\User $user */
-        $user = Auth::user();
-
-        // Create token for API access
-
-        $token = $user->createToken('auth_token')->plainTextToken;
-
-        return response()->json([
-            'success' => true,
-            'user' => $this->formatUser($user),
-            'token' => $token,
-        ]);
+            return $this->success(
+                data: $result,
+                message: 'Logged in successfully'
+            );
+        } catch (\App\Exceptions\ApiException  $e) {
+            return $this->error(
+                message: $e->getMessage(),
+                status: (int) $e->getCode() ?: 400
+            );
+        }catch (\Exception $e) {
+             Log::error($e->getMessage());
+        return $this->error('Something went wrong', 500);     //  unknown errors → 500
+    }
     }
 
     /**
@@ -90,33 +73,27 @@ class AuthController extends Controller
      */
     public function logout(Request $request)
     {
-        /** @var \App\Models\User $user */
-        $user = $request->user();
+      try {
+            $this->authService->logout($request);
 
-        if (!$user) {
-            return response()->json([
-                'message' => 'Unauthenticated'
-            ], 401);
+            return $this->success(message: 'Logged out successfully');
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), 500);
         }
-
-        $request->user()->currentAccessToken()->delete();
-
-        return response()->json([
-            'message' => 'Logged out successfully'
-        ]);
     }
 
     /**
      * Logout from all devices
      */
-    public function logoutAll(Request $request)
+     public function logoutAll(Request $request)
     {
-        /** @var \App\Models\User $user */
-        $request->user()->tokens()->delete();
+        try {
+            $this->authService->logoutAll($request);
 
-        return response()->json([
-            'message' => 'Logged out from all devices'
-        ]);
+            return $this->success(message: 'Logged out from all devices');
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), 500);
+        }
     }
 
     /**
@@ -136,89 +113,32 @@ class AuthController extends Controller
         ]);
     }
 
- public function forgot_password(Request $request)
+ public function forgot_password(ForgotPasswordRequest  $request)
 {
-    $request->validate([
-        'email' => ['required', 'email']
-    ]);
+    try {
+            $this->authService->forgotPassword($request->email);
 
-    $user = User::where('email', $request->email)->first();
-
-    if (!$user) {
-        return response()->json([
-            'message' => 'User not found'
-        ], 404);
-    }
-
-    $token = random_int(100000, 999999);
-
-    DB::table('password_reset_tokens')->updateOrInsert(
-        ['email' => $request->email],
-        [
-            'email' => $request->email,
-            'token' => $token,
-            'created_at' => now()
-        ]
-    );
-    Mail::to($request->email)->send(new PasswordResetOtp($token));
-
-    return response()->json([
-        'message' => 'Password reset token generated',
-
-    ]);
+            // always success — never reveal if email exists
+            return $this->success(message: 'You will receive an OTP only if this email exists');
+        } catch (\Exception $e) {
+            return $this->error($e->getMessage(), 500);
+        }
 }
 
- public function reset_password(Request $request)
+ public function reset_password(ResetPasswordRequest $request)
 {
-    $request->validate([
-        'email' => ['required', 'email'],
-        'token' => ['required'],
-        'password' => ['required', 'confirmed', 'min:8'],
-    ]);
+    try {
+            $this->authService->resetPassword($request->validated());
 
-    $reset = DB::table('password_reset_tokens')
-        ->where('email', $request->email)
-        ->where('token', $request->token)
-        ->first();
-
-    if (!$reset) {
-        return response()->json([
-            'message' => 'Invalid token'
-        ], 400);
+            return $this->success(message: 'Password reset successfully');
+        } catch (\App\Exceptions\ApiException  $e) {
+            return $this->error(
+                message: $e->getMessage(),
+                status: (int) $e->getCode() ?: 400
+            );
+        }catch (\Exception $e) {
+        return $this->error('Something went wrong', 500);     //  unknown errors → 500
+    }
     }
 
-    // optional expiry (60 minutes)
-    if (now()->diffInMinutes($reset->created_at) > config('otp.expires_minutes')) {
-        return response()->json([
-            'message' => 'Token expired'
-        ], 400);
-    }
-
-    $user = User::where('email', $request->email)->first();
-
-    $user->update([
-        'password' => Hash::make($request->password)
-    ]);
-
-    // delete token after use
-    DB::table('password_reset_tokens')
-        ->where('email', $request->email)
-        ->delete();
-
-    return response()->json([
-        'message' => 'Password reset successfully'
-    ]);
-}
-    /**
-     * Centralized user response formatting
-     * (avoids repetition across methods)
-     */
-    private function formatUser(User $user): array
-    {
-        return [
-            'id' => $user->id,
-            'name' => $user->name,
-            'email' => $user->email,
-        ];
-    }
 }
